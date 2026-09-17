@@ -1,0 +1,83 @@
+================================================================================
+ HOW TO MAKE THE PROJECT RUN — STEP BY STEP
+================================================================================
+
+THE PROBLEM:
+  The project needs UCanAccess JDBC driver to connect to the MS Access
+  database (parking.accdb). These jars must be placed inside the project
+  before it will work.
+
+================================================================================
+STEP 1 — DOWNLOAD UCanAccess 5.0.1
+================================================================================
+
+Go to this URL in your browser:
+  https://sourceforge.net/projects/ucanaccess/files/
+
+Download: UCanAccess-5.0.1-bin.zip
+
+Extract the zip. You will get a folder with these files:
+  - ucanaccess-5.0.1.jar          (main jar)
+  - lib/jackcess-3.0.1.jar
+  - lib/commons-lang3-3.8.1.jar
+  - lib/commons-logging-1.2.jar
+  - lib/hsqldb-2.5.0.jar
+
+================================================================================
+STEP 2 — COPY JARS INTO PROJECT
+================================================================================
+
+Copy ALL 5 jars into this folder inside your project:
+
+  Parking-Management-System-master\src\lib\
+
+After copying, the lib folder should contain:
+  - mssql-jdbc-7.2.2.jre8.jar    (already there)
+  - ucanaccess-5.0.1.jar          (copy this)
+  - jackcess-3.0.1.jar            (copy this)
+  - commons-lang3-3.8.1.jar       (copy this)
+  - commons-logging-1.2.jar       (copy this)
+  - hsqldb-2.5.0.jar              (copy this)
+
+================================================================================
+STEP 3 — OPEN IN NETBEANS
+================================================================================
+
+1. Open NetBeans
+2. File → Open Project
+3. Select the Parking-Management-System-master folder
+4. Right-click project → Properties → Libraries
+5. Remove any RED "Broken reference" entries from Classpath
+6. Click "+" on Classpath → Add JAR/Folder
+7. Navigate to src\lib\ folder
+8. Select all 5 UCanAccess jars → Add
+
+================================================================================
+STEP 4 — CLEAN AND BUILD
+================================================================================
+
+1. Right-click project → Clean and Build  (Shift+F11)
+2. Right-click project → Run  (F6)
+
+================================================================================
+STEP 5 — LOGIN CREDENTIALS
+================================================================================
+
+Staff Login:
+  - Username: checkin   Password: 1234   (for car/bike check-in)
+  - Username: checkout  Password: 1234   (for check-out)
+
+Admin Login:
+  - Username: admin     Password: 1234
+
+================================================================================
+IF STILL NOT WORKING
+================================================================================
+
+Check that parking.accdb exists at:
+  Parking-Management-System-master\src\DataBase\parking.accdb
+
+If the file is missing — it was not included in the zip.
+You need the original parking.accdb file from the original GitHub project.
+
+================================================================================

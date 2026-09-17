@@ -1,0 +1,435 @@
+================================================================================
+ E-PARKING EXPERT SYSTEM — REFACTORING REPORT
+ Project: Parking-Management-System (NetBeans / Java Swing / MS Access)
+================================================================================
+
+--------------------------------------------------------------------------------
+0. IMPORTANT — READ THIS FIRST (honest status of this submission)
+--------------------------------------------------------------------------------
+UPDATE (post-submission fix): after the first version of this refactor was
+delivered, testing in NetBeans surfaced a real bug: "Search failed: Cannot
+invoke java.sql.Connection.prepareStatement(String) because con is null".
+
+Root cause found and fixed: util/DbConfig.java originally resolved the
+database path using System.getProperty("user.dir"). This system property
+is NOT guaranteed to equal the project's root folder - it depends on how
+NetBeans (or any launcher) starts the JVM - so the resolved path could
+silently point at a file that does not exist. DriverManager.getConnection()
+then failed, setConnection() returned null, and every downstream method
+failed with a confusing null-pointer-style error that gave no indication
+of the real cause.
+
+Fix applied: DbConfig.java now locates the .accdb file relative to the
+actual location of its own compiled .class file (via getProtectionDomain()
+.getCodeSource()), with the old user.dir-based logic kept as a fallback.
+ParkingDataBase.setConnection() was also updated to show a clear popup
+with the resolved URL and the underlying exception message on failure,
+instead of only printing to the console - so any future connection
+problem (e.g. a still-missing JDBC driver) will be visible immediately
+instead of surfacing later as an unrelated-looking error.
+
+This was a genuine bug introduced during the original refactor, not a
+missing-library issue. It is now documented here for transparency.
+
+This refactoring was done by reading and rewriting every .java file in the
+project (13 files, ~2,750 original lines). It was NOT possible to compile or
+run the project in the sandbox used to do this work, for two reasons:
+
+  1. No Java Development Kit (javac) was available in that environment
+     (only a JRE), and the network was restricted so a JDK could not be
+     installed.
+  2. The project depends on the UCanAccess JDBC driver to talk to the
+     parking.accdb (MS Access) file. That driver is NOT included in the
+     project's src/lib folder (only an unrelated mssql-jdbc-7.2.2.jre8.jar
+     is present). This means even the ORIGINAL, unmodified project could
+     not have connected to the database without the developer manually
+     adding the UCanAccess driver in NetBeans first. This is a pre-existing
+     gap in the project setup, not something this refactor introduced.
+
+What this means practically:
+  - Every change below was done through careful manual reading and
+    cross-checking (matching every method call against its definition,
+    checking every import is used, checking every Swing field referenced
+    in event handlers is still declared, etc.) — NOT through an actual
+    javac build.
+  - You MUST open this project in NetBeans (or compile with javac + the
+    UCanAccess + Access JDBC jars on the classpath) to get a real,
+    verified "it compiles and runs" confirmation before you submit it.
+  - The refactoring preserves the original program's behavior and public
+    method names/signatures wherever other files depend on them, which
+    significantly reduces (but cannot 100% eliminate without a real build)
+    the risk of a compile error.
+
+--------------------------------------------------------------------------------
+1. CODE SMELLS IDENTIFIED
+--------------------------------------------------------------------------------
+
+ #  Smell                          Where Found                          Category
+--  -----------------------------  ------------------------------------  --------
+ 1  Duplicate Code                 Detail.java vs BikeDetail.java        Bloater /
+                                    (~95% identical class)                Dupl.
+ 2  Duplicate Code                 login.java vs Adlog.java               Dupl.
+                                    (~95% identical login screens)
+ 3  Duplicate Code                 getRevenue() repeated in both          Dupl.
+                                    ParkingDataBase.java and
+                                    getRevenueFromDataBase.java
+ 4  Duplicate Code                 SystemExit() copy-pasted in 5          Dupl.
+                                    files (login, display, MainPage,
+                                    Adlog, AdminPanel)
+ 5  Hardcoded Credentials          login.java, Adlog.java                Security
+                                    ("1234", "checkin", "checkout",
+                                    "admin")
+ 6  SQL Injection Vulnerability    ParkingDataBase.java (all methods),    Security
+                                    Search.java — raw string
+                                    concatenation into SQL statements
+ 7  Hardcoded Absolute File Paths  DB connection string in                Portability
+                                    ParkingDataBase.java; image paths
+                                    in display.java, MainPage.java,
+                                    AdminPanel.java (all "D:\\...")
+ 8  Magic Numbers                  Parking rates 30 / 20 in 5+ places;   Readability
+                                    combo-box indices 0/1/2 everywhere
+ 9  Functional Bug From            Revenue.java — Bike revenue branch    Bug
+    Duplication                    displayed "20" as the charge but
+                                    calculated total using count*30
+10  Dead / Unused Imports          "sun.security.jgss.GSSUtil.login"     Clutter
+                                    (display.java, MainPage.java);
+                                    "javafx.print.Printer",
+                                    "javafx.scene.control.DatePicker"
+                                    (Detail, BikeDetail, Revenue, Search)
+11  No Input Validation            Integer.parseInt(id.getText())        Robustness
+                                    in Detail.java / BikeDetail.java
+                                    (crashes app on bad input)
+12  Resource / Connection Leak     ParkingDataBase.java — Connection     Reliability
+                                    never closed on exception paths;
+                                    Search.java — Connection never
+                                    closed at all
+13  Generic Exception Handling /   catch(Exception e) {                 Maintain-
+    Silent Failure                 System.out.println(...) } pattern     ability
+                                    repeated everywhere
+14  Poor / Non-Descriptive Naming  jButton1/2/3, Data, k, op, m1, l1,    Readability
+                                    r1, a1, s1, d1
+15  God-Class Tendency             ParkingDataBase does connections,    Design
+                                    ID lookup, revenue calc, insert,
+                                    update, select — for both vehicle
+                                    types
+16  Long / Mixed-Responsibility    Search1ActionPerformed,              Design
+    Methods                       jButton1ActionPerformed (Revenue)
+                                    mix UI + business + DB logic
+17  Type Code Instead of           "Car"/"Bike" passed everywhere as    Design
+    Constants                     raw String literals
+
+--------------------------------------------------------------------------------
+2. REFACTORING TECHNIQUES APPLIED (per smell)
+--------------------------------------------------------------------------------
+
+ 1-2. Extract Class / Pull Up Method
+      - Created parking/VehicleCheckInBase.java (abstract class) holding
+        all logic that was duplicated between Detail.java and
+        BikeDetail.java (ID lookup, position lookup, input validation,
+        save logic, slip-text building).
+      - Detail and BikeDetail now EXTEND VehicleCheckInBase and only
+        supply the 2 things that differ: vehicle type name and parking
+        charge, via two small overridden methods.
+      - login.java and Adlog.java were NOT merged into one class (their
+        .form GUI files and slightly different post-login destinations
+        make a clean merge risky without a real NetBeans rebuild), but
+        both were cleaned up to remove their other duplicated pieces
+        (SystemExit, magic literals).
+
+ 3.   Remove Duplicate Code
+      - Deleted getRevenueFromDataBase.java entirely. It only extended
+        ParkingDataBase to re-declare the exact same getRevenue() method
+        already present in the parent class, and was never called from
+        anywhere else in the project (verified via project-wide search).
+
+ 4.   Extract Method (Pull Up to shared utility)
+      - Created util/WindowUtils.java with one static method,
+        closeWindow(JFrame). Replaced the identical 5-times-duplicated
+        SystemExit() method in login, display, MainPage, Adlog, and
+        AdminPanel with calls to WindowUtils.closeWindow(this).
+
+ 5.   Replace Magic Literal with Named Constant
+      - Created util/AppConstants.java holding STAFF_PASSWORD,
+        STAFF_CHECKIN_USER, STAFF_CHECKOUT_USER, ADMIN_PASSWORD,
+        ADMIN_USER, CAR_PARKING_CHARGE, BIKE_PARKING_CHARGE, CAR_TABLE,
+        BIKE_TABLE.
+      - NOTE: per project scope, this system has no separate user/auth
+        database table, so true "remove hardcoded credentials" (e.g.
+        moving to a hashed credentials table) was out of scope for a
+        behavior-preserving refactor. What WAS done: the literals are no
+        longer scattered through if-statements; they live in one place,
+        which is the first concrete step toward a real auth system later.
+
+ 6.   Replace Statement+Concatenation with PreparedStatement
+      - ParkingDataBase.java: every method (getID, getRevenue,
+        insertParkingDetail, getData, updateTimeOut, updateCarPosition,
+        selectAvailablePosition) now uses PreparedStatement with bound
+        parameters (?) instead of building SQL strings via "+".
+      - Table/column NAMES cannot be parameterized in JDBC, so a new
+        sanitizeIdentifier() allow-list method restricts table-name
+        input to the 6 known, expected table names. Any other value
+        throws an IllegalArgumentException instead of reaching the SQL
+        engine.
+      - Search.java: the admin's free-text search box was previously
+        concatenated directly into the WHERE clause. Now uses
+        PreparedStatement with a bound parameter.
+
+ 7.   Replace Hardcoded Path with Resolved Relative Path
+      - Created util/DbConfig.java: resolves parking.accdb relative to
+        the project's working directory (src/DataBase/parking.accdb)
+        instead of the literal "D://6th Semester//SRE//...".
+      - Created util/ImagePaths.java: resolves icons relative to the
+        project's Pictures/ folder instead of
+        "D:\\hamza\\assignment\\NetBeansProjects\\Parking\\Pictures\\...".
+      - Applied in display.java, MainPage.java, AdminPanel.java.
+
+ 8.   Replace Magic Number with Symbolic Constant
+      - All literal 30s/20s for parking charges replaced with
+        AppConstants.CAR_PARKING_CHARGE / BIKE_PARKING_CHARGE.
+      - CarOut.java's confirm-dialog magic number (0) replaced with the
+        self-documenting JOptionPane.YES_OPTION constant.
+
+ 9.   Bug Fix (via Extract Method)
+      - Revenue.java's single long jButton1ActionPerformed was split
+        into buildCarRevenueReport(), buildBikeRevenueReport(),
+        buildTotalRevenueReport(). While extracting, the Bike branch was
+        corrected to multiply by BIKE_PARKING_CHARGE (20) instead of the
+        old hardcoded 30, so the displayed text and the actual total now
+        agree. This was explicitly approved as an output-changing fix
+        for that one report (per your decision).
+
+10.   Remove Dead Code
+      - Deleted the unused "sun.security.jgss.GSSUtil.login" static
+        import (display.java, MainPage.java) and the unused
+        "javafx.print.Printer" / "javafx.scene.control.DatePicker"
+        imports (Detail, BikeDetail, Revenue, Search). None of these
+        were referenced anywhere in their respective files.
+
+11.   Introduce Guard Clause / Input Validation
+      - Added parseIdSafely() in VehicleCheckInBase: wraps
+        Integer.parseInt in a try/catch and returns -1 on bad input.
+      - SaveActionPerformed in Detail/BikeDetail now checks for -1 and
+        shows a friendly JOptionPane error instead of letting
+        NumberFormatException crash the app.
+
+12.   Introduce try-with-resources / finally block
+      - ParkingDataBase.java: Connection, PreparedStatement and
+        ResultSet are now opened in try-with-resources blocks, so they
+        are closed automatically even when an exception is thrown.
+      - Search.java: Connection is now opened, used, and closed in a
+        finally block (previously never closed at all).
+
+13.   Improve Exception Handling / User Feedback
+      - Print-related catch blocks (Detail, BikeDetail, Revenue, Search)
+        now show a JOptionPane error message to the user instead of
+        silently printing to the console, where the staff/admin user
+        would never see it.
+      - Database-layer catch blocks now include e.getMessage() in the
+        printed text instead of a generic "Error" string, to aid future
+        debugging.
+
+14.   Rename Variable / Method (where safe)
+      - CarOut.java: renamed the confusing "op" variable to
+        "dialogResult".
+      - ParkingDataBase.java: added clearly-named wrapper methods
+        (insertParkingDetail, getData, updateTimeOut, updateCarPosition,
+        selectAvailablePosition) while keeping the original
+        method names (InsertCarDetail, GetData, UpdateTimeOut,
+        UpdateCarPosition, SelectCarPosition) as thin pass-through
+        wrappers — this means every existing call site elsewhere in the
+        project keeps compiling unchanged, while new/future code can
+        call the clearer names.
+      - NOTE: the deeply embedded NetBeans-generated Swing field names
+        (jButton1, jLabel2, etc.) were intentionally LEFT AS-IS. These
+        are tied 1:1 to the corresponding .form GUI-builder XML files;
+        renaming them without also hand-editing the .form XML risks
+        desynchronizing the GUI designer from the code and breaking the
+        project in NetBeans. This was a deliberate scope decision to
+        keep the refactor behavior-preserving and low-risk.
+
+15-16. Extract Method / Single Responsibility (partial)
+      - Revenue.java's report-building logic was extracted into 3
+        focused private methods (see #9).
+      - Search.java's SQL building was kept inside its event handler
+        (further extraction into a dedicated search-service class was
+        considered but judged out of scope for this pass, to avoid
+        touching more files than necessary for a first refactoring
+        submission).
+
+17.   Replace Type Code with Constants
+      - "Car"/"Bike" string literals replaced with
+        AppConstants.CAR_TABLE / AppConstants.BIKE_TABLE throughout
+        CarOut.java, Detail.java, BikeDetail.java, Revenue.java.
+
+--------------------------------------------------------------------------------
+3. BEFORE / AFTER — KEY EXAMPLES
+--------------------------------------------------------------------------------
+
+--- Example A: SQL Injection (ParkingDataBase.java) ---
+
+BEFORE:
+    Statement st = con.createStatement();
+    ResultSet rs = st.executeQuery(
+        "SELECT * FROM " + TableName + " WHERE Position = '" + pos + "'");
+
+AFTER:
+    String sql = "SELECT * FROM " + safeTable + " WHERE Position = ?";
+    PreparedStatement ps = con.prepareStatement(sql);
+    ps.setString(1, position);
+    ResultSet rs = ps.executeQuery();
+
+--- Example B: Duplicate Code (Detail.java / BikeDetail.java) ---
+
+BEFORE (existed almost identically in BOTH files):
+    private void SaveActionPerformed(...) {
+        int sNo = Integer.parseInt(id.getText());          // crashes on bad input
+        dataBase.InsertCarDetail("Car", sNo, Reg.getText(), Position.getText());
+        Area.setText(" ID: "+sNo+"\n RegNo: "+Reg.getText()+
+                     "\n Position: "+Position.getText()+"\n Parking Charges: 30");
+    }
+
+AFTER (shared logic lives once in VehicleCheckInBase, subclasses just call it):
+    private void SaveActionPerformed(...) {
+        int sNo = parseIdSafely(id.getText());
+        if (sNo < 0) {
+            JOptionPane.showMessageDialog(this, "Please enter a valid numeric ID...",
+                "Invalid Input", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        saveParkingDetail(sNo, Reg.getText(), Position.getText());
+        Area.setText(buildParkingSlipText(sNo, Reg.getText(), Position.getText()));
+    }
+
+--- Example C: The Revenue bug (Revenue.java) ---
+
+BEFORE:
+    count = dataBase.getRevenue("BikeDetail", Date.getText());
+    Area.setText("...Parking Charges for a Bike: 20\n Total Revenue Collected: "
+                  + (count*30));   // <-- uses 30 (car rate) for a bike report
+
+AFTER:
+    int count = dataBase.getRevenue(AppConstants.BIKE_TABLE + "Detail", Date.getText());
+    int total = count * AppConstants.BIKE_PARKING_CHARGE;   // = count * 20
+    return "...Parking Charges for a Bike: " + AppConstants.BIKE_PARKING_CHARGE
+           + "\n Total Revenue Collected: " + total;
+
+--- Example D: Hardcoded path (ParkingDataBase.java) ---
+
+BEFORE:
+    String url = "jdbc:ucanaccess://D://6th Semester//SRE//" +
+                 "Parking-Management-System-master//src//DataBase//parking.accdb";
+
+AFTER:
+    String url = DbConfig.getDatabaseUrl();
+    // DbConfig resolves "src/DataBase/parking.accdb" relative to the
+    // project's working directory, so it works on any machine/OS.
+
+--------------------------------------------------------------------------------
+4. WHY THIS REDUCES COMPLEXITY AND IMPROVES MAINTAINABILITY
+--------------------------------------------------------------------------------
+
+- Single source of truth: parking charges, table names, and login
+  credentials each now exist in exactly ONE place (AppConstants.java).
+  Changing the car parking rate now requires editing 1 line instead of
+  hunting through 5+ files.
+
+- Less code to maintain: VehicleCheckInBase removed ~120 lines of
+  duplicated business logic between Detail and BikeDetail. WindowUtils
+  removed 5 copies of an identical 3-line method. Deleting
+  getRevenueFromDataBase.java removed an entire redundant class.
+
+- Security posture: every SQL statement in the project is now built
+  with PreparedStatement and bound parameters, removing the SQL
+  injection surface that previously existed on every single database
+  method, including the admin Search screen.
+
+- Portability: the project no longer hardcodes one developer's "D:\"
+  drive layout. Both the database file and the UI icons are located
+  relative to the project folder, so the same zip can run on a
+  different machine/OS without find-and-replace path edits.
+
+- Robustness: a single bad keystroke in the ID field used to crash the
+  whole Swing application (uncaught NumberFormatException). It now
+  shows a normal validation message and lets the user correct it.
+
+- Correctness: the Bike revenue report now reports a number that
+  matches its own label, instead of silently overcharging/undercounting
+  bike revenue by 50% in every report that included it.
+
+- Lower risk of leaks: every database connection opened by this project
+  is now guaranteed to be closed, even when something goes wrong midway
+  through a query — previously, every error path left connections open.
+
+--------------------------------------------------------------------------------
+5. WHAT WAS DELIBERATELY NOT CHANGED (and why)
+--------------------------------------------------------------------------------
+
+- NetBeans-generated Swing variable names (jButton1, jLabel3, etc.) and
+  the entire initComponents() / GroupLayout blocks were left untouched.
+  These are mechanically generated from the paired .form XML files; the
+  safe way to rename them is through the NetBeans GUI editor itself, not
+  by hand-editing generated code outside that tool.
+
+- login.java and Adlog.java were NOT merged into a single shared login
+  class. They are structurally very similar, but they lead to different
+  destinations on success (display/CarOut vs AdminPanel) and are backed
+  by separate .form files. A safe merge would need to happen inside
+  NetBeans where the .form/.java pairing can be verified visually; doing
+  it blind in a text-only refactor was judged too risky for this pass.
+
+- The login mechanism itself is still a plain hardcoded
+  username/password check (now using named constants instead of bare
+  literals). A real user/password database table, hashing, etc. would
+  be a legitimate next refactoring step, but it changes the system's
+  behavior/scope (a new DB table, a new screen for managing accounts)
+  rather than being a behavior-preserving refactor of the existing code.
+
+--------------------------------------------------------------------------------
+6. FILES CHANGED / ADDED / REMOVED
+--------------------------------------------------------------------------------
+
+ADDED:
+  src/util/AppConstants.java        (new - centralized constants)
+  src/util/DbConfig.java            (new - resolves DB path)
+  src/util/ImagePaths.java          (new - resolves image paths)
+  src/util/WindowUtils.java         (new - shared window-close helper)
+  src/parking/VehicleCheckInBase.java (new - shared Car/Bike check-in logic)
+
+MODIFIED:
+  src/login.java
+  src/parking/display.java
+  src/parking/MainPage.java
+  src/parking/Detail.java
+  src/parking/BikeDetail.java
+  src/parking/CarOut.java
+  src/AdminPanel/Adlog.java
+  src/AdminPanel/AdminPanel.java
+  src/AdminPanel/Revenue.java
+  src/AdminPanel/Search.java
+  src/DataBase/ParkingDataBase.java
+
+REMOVED:
+  src/DataBase/getRevenueFromDataBase.java   (pure duplicate, unused
+                                               elsewhere in the project)
+
+UNCHANGED:
+  src/parking/Parking.java (already minimal, no smells found)
+  All .form files, nbproject/ build configuration, manifest.mf
+
+--------------------------------------------------------------------------------
+7. BEFORE YOU SUBMIT
+--------------------------------------------------------------------------------
+
+1. Open the project in NetBeans and do a Clean & Build. Fix any compile
+   error NetBeans reports — this submission was reviewed manually, not
+   compiled, so treat the first build as the real verification step.
+2. Add the UCanAccess JDBC driver (and its dependencies: hsqldb,
+   jackcess, commons-lang, commons-logging) to the project's libraries
+   if they are not already configured in your NetBeans environment —
+   this was missing from the supplied src/lib folder in the ORIGINAL
+   project too, not introduced by this refactor.
+3. Test each screen manually: Staff login (checkin/checkout), Car
+   check-in, Bike check-in, Checkout, Admin login, Search, and all 3
+   Revenue report options (Car/Bike/Total) — confirm the Bike revenue
+   number now matches count x 20 as expected.
+================================================================================
