@@ -62,7 +62,7 @@ Original Code  →  Reverse Engineering  →  Refactoring  →  Forward Engineer
 | 16 | Long methods mixing UI + business + DB logic | Design |
 | 17 | Type-code strings (`"Car"`/`"Bike"`) instead of constants | Design |
 
-*(Full details with before/after code examples in [`REFACTORING_REPORT.txt`](REFACTORING_REPORT.txt))*
+*(Full details with before/after code examples in [`REFACTORING_REPORT.txt`](Refectored project/Parking-Management-System-master/REFACTORING_REPORT.txt))*
 
 ---
 
